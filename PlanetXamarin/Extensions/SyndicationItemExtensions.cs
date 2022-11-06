@@ -30,7 +30,7 @@ public static class SyndicationItemExtensions
         return hasXamarinTitle || hasXamarinCategory || hasXamarinKeywords;
     }
 
-	public static string ToHtml(this SyndicationContent content) =>
+    public static string ToHtml(this SyndicationContent content) =>
         content is TextSyndicationContent textSyndicationContent
             ? textSyndicationContent.Text
             : content.ToString() ?? string.Empty;
