@@ -3,23 +3,18 @@ using PlanetXamarin.Extensions;
 using PlanetXamarinAuthors.Models;
 using Polly;
 using Polly.Retry;
-using System;
-using System.Collections.Generic;
-using System.Linq;
 using System.Net;
-using System.Net.Http;
 using System.Net.Http.Headers;
 using System.ServiceModel.Syndication;
-using System.Threading.Tasks;
 using System.Xml;
 
 namespace PlanetXamarin.Infrastructure
 {
     public class CombinedFeedSource
     {
-        private static HttpClient _httpClient;
-        private static AsyncRetryPolicy _retryPolicy;
-        private readonly IEnumerable<Author> _authors;
+        private readonly HttpClient _httpClient;
+        private readonly AsyncRetryPolicy _retryPolicy;
+        private readonly IList<Author> _authors;
         private readonly ILogger _logger;
         private readonly string _rssFeedTitle;
         private readonly string _rssFeedDescription;
@@ -27,22 +22,19 @@ namespace PlanetXamarin.Infrastructure
         private readonly string _rssFeedImageUrl;
 
         public CombinedFeedSource(
-            IEnumerable<Author> authors,
+            IList<Author> authors,
             ILogger logger,
             string rssFeedTitle,
             string rssFeedDescription,
             string rssFeedUrl,
             string rssFeedImageUrl)
         {
-            EnsureHttpClient();
+            _httpClient = EnsureHttpClient();
 
-            if (_retryPolicy == null)
-            {
-                // retry policy with max 2 retries, delay by x*x^1.2 where x is retry attempt
-                // this will ensure we don't retry too quickly
-                _retryPolicy = Policy.Handle<FeedReadFailedException>()
-                    .WaitAndRetryAsync(2, retry => TimeSpan.FromSeconds(retry * Math.Pow(1.2, retry)));
-            }
+            // retry policy with max 2 retries, delay by x*x^1.2 where x is retry attempt
+            // this will ensure we don't retry too quickly
+            _retryPolicy = Policy.Handle<FeedReadFailedException>()
+                .WaitAndRetryAsync(2, retry => TimeSpan.FromSeconds(retry * Math.Pow(1.2, retry)));
 
             _authors = authors;
             _logger = logger;
@@ -52,34 +44,33 @@ namespace PlanetXamarin.Infrastructure
             _rssFeedImageUrl = rssFeedImageUrl;
         }
 
-        private void EnsureHttpClient()
+        private HttpClient EnsureHttpClient()
         {
-            if (_httpClient == null)
-            {
-                _httpClient = new HttpClient();
-                _httpClient.DefaultRequestHeaders.UserAgent.Add(
-                    new ProductInfoHeaderValue("PlanetXamarin", $"{GetType().Assembly.GetName().Version}"));
-                _httpClient.Timeout = TimeSpan.FromSeconds(15);
+            var httpClient = new HttpClient();
+            httpClient.DefaultRequestHeaders.UserAgent.Add(
+                new ProductInfoHeaderValue("PlanetXamarin", $"{GetType().Assembly.GetName().Version}"));
+            httpClient.Timeout = TimeSpan.FromSeconds(15);
 
-                ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls13;
-            }
+            ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls13;
+
+            return httpClient;
         }
 
         public async Task<SyndicationFeed> LoadFeed(int? numberOfItems, string languageCode = "mixed")
         {
-            IEnumerable<Author> tamarins;
-            if (languageCode == null || languageCode == "mixed") // use all tamarins
+            IList<Author> tamarins;
+            if (languageCode is "mixed") // use all tamarins
             {
                 tamarins = _authors;
             }
             else
             {
-                tamarins = _authors.Where(t => t.FeedLanguageCode == languageCode);
+                tamarins = _authors.Where(t => t.FeedLanguageCode == languageCode).ToList();
             }
 
-            var feedTasks = tamarins.SelectMany(t => TryReadFeeds(t)).ToArray();
+            var feedTasks = tamarins.SelectMany(TryReadFeeds).ToArray();
 
-            _logger?.LogInformation($"Loading feed for language: {languageCode} for {feedTasks.Length} authors");
+            _logger.LogInformation($"Loading feed for language: {languageCode} for {feedTasks.Length} authors");
 
             var syndicationItems = await Task.WhenAll(feedTasks).ConfigureAwait(false);
             var combinedFeed = GetCombinedFeed(syndicationItems.SelectMany(f => f), languageCode, tamarins, numberOfItems);
@@ -95,14 +86,15 @@ namespace PlanetXamarin.Infrastructure
         {
             try
             {
-                return await _retryPolicy.ExecuteAsync(context => ReadFeed(feedUri), new Context(feedUri)).ConfigureAwait(false);
+                return await _retryPolicy.ExecuteAsync(_ => ReadFeed(feedUri), new Context(feedUri)).ConfigureAwait(false);
             }
             catch (FeedReadFailedException ex)
             {
-                _logger.LogError(ex, $"{tamarin.FirstName} {tamarin.LastName}'s feed of {ex.Data["FeedUri"]} failed to load.");
+                _logger.LogError(ex, "{FirstName} {LastName}'s feed of {FeedUri} failed to load.", tamarin.FirstName,
+                    tamarin.LastName, ex.Data["FeedUri"]);
             }
 
-            return new SyndicationItem[0];
+            return Array.Empty<SyndicationItem>();
         }
 
         private async Task<IEnumerable<SyndicationItem>> ReadFeed(string feedUri)
@@ -110,11 +102,11 @@ namespace PlanetXamarin.Infrastructure
             HttpResponseMessage response;
             try
             {
-                _logger?.LogInformation($"Loading feed {feedUri}");
+                _logger.LogInformation("Loading feed {FeedUri}", feedUri);
                 response = await _httpClient.GetAsync(feedUri).ConfigureAwait(false);
                 if (response.IsSuccessStatusCode)
                 {
-                    using var feedStream = await response.Content.ReadAsStreamAsync().ConfigureAwait(false);
+                    await using var feedStream = await response.Content.ReadAsStreamAsync().ConfigureAwait(false);
                     using var reader = XmlReader.Create(feedStream);
                     var feed = SyndicationFeed.Load(reader);
                     var filteredItems = feed.Items
@@ -165,7 +157,7 @@ namespace PlanetXamarin.Infrastructure
             var orderedItems = items
                 .Where(item =>
                     GetMaxTime(item) <= DateTimeOffset.UtcNow)
-                .OrderByDescending(item => GetMaxTime(item));
+                .OrderByDescending(GetMaxTime);
 
             var feed = new SyndicationFeed(
                 _rssFeedTitle,
