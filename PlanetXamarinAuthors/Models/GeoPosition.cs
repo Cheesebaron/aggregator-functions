@@ -2,19 +2,12 @@
 
 namespace PlanetXamarinAuthors.Models
 {
-    public class GeoPosition
-    {
-        public static GeoPosition Empty = new GeoPosition(-1337, 42);
-
+    public record struct GeoPosition(
         [JsonProperty("lat", Required = Required.Always)]
-        public double Lat { get; }
+        double Latitude,
         [JsonProperty("lon", Required = Required.Always)]
-        public double Lng { get; }
-
-        public GeoPosition(double lat, double lng)
-        {
-            Lat = lat;
-            Lng = lng;
-        }
+        double Longitude)
+    {
+        public static GeoPosition Empty = new(-1337, 42);
     }
 }
